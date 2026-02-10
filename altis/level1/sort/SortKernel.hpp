@@ -23,7 +23,7 @@ namespace Baseliner {
     }
 
     void generate_random() override {
-      std::default_random_engine gen(seed);
+      std::default_random_engine gen(get_seed());
       std::uniform_int_distribution<unsigned int> dist(0, 1024);
 
       for (int i = 0; i < m_size; i++) {
@@ -38,7 +38,7 @@ namespace Baseliner {
     }
 
     void allocate() override {
-      m_size = m_base_size * m_work_size;
+      m_size = m_base_size * get_work_size();
       m_keys_host.resize(m_size);
       m_vals_host.resize(m_size);
     }
@@ -51,10 +51,10 @@ namespace Baseliner {
 
   class SortOutput : public Baseliner::IOutput<SortInput> {
   public:
-    explicit SortOutput(const SortInput &input)
+    explicit SortOutput(std::shared_ptr<const SortInput> input)
         : Baseliner::IOutput<SortInput>(input) {
-      m_keys_host.resize(m_input.m_size);
-      m_vals_host.resize(m_input.m_size);
+      m_keys_host.resize(get_input()->m_size);
+      m_vals_host.resize(get_input()->m_size);
     }
 
     std::vector<unsigned int> m_keys_host;
@@ -62,18 +62,18 @@ namespace Baseliner {
 
     friend std::ostream &operator<<(std::ostream &os, const SortOutput &out) {
       os << "Output (First 10): " << std::endl;
-      int limit = std::min((int)out.m_input.m_size, 10);
+      int limit = std::min((int)out.get_input()->m_size, 10);
       for (int i = 0; i < limit; i++) {
         os << "K: " << out.m_keys_host[i] << " V: " << out.m_vals_host[i] << std::endl;
       }
       return os;
     }
     bool operator==(const SortOutput &other) const {
-      if (m_input.m_size != other.m_input.m_size) {
+      if (get_input()->m_size != other.get_input()->m_size) {
         return false;
       }
 
-      for (int i = 0; i < m_input.m_size; i++) {
+      for (int i = 0; i < get_input()->m_size; i++) {
         if (m_keys_host[i] != other.m_keys_host[i]) {
           return false;
         }
@@ -87,7 +87,7 @@ namespace Baseliner {
 
   class SortKernel : public Baseliner::ICudaKernel<SortInput, SortOutput> {
   public:
-    SortKernel(const SortInput &input)
+    SortKernel(std::shared_ptr<const SortInput> input)
         : Baseliner::ICudaKernel<SortInput, SortOutput>(input) {
     }
     std::string name() override {
@@ -97,7 +97,7 @@ namespace Baseliner {
     void cpu(SortOutput &output) override;
     void setup() override;
     void reset() override;
-    void run(std::shared_ptr<cudaStream_t> &stream) override;
+    void run(std::shared_ptr<cudaStream_t> stream) override;
     void teardown(SortOutput &output) override;
 
   private:

@@ -7,9 +7,8 @@ include(FetchContent)
 FetchContent_Declare(
   baseliner
   GIT_REPOSITORY https://github.com/comeyrd/gpu-kernel-baseliner.git
-  GIT_TAG        develop 
+  GIT_TAG        v0.2.6
 )
-#  GIT_TAG        v0.2.1 
 
 FetchContent_MakeAvailable(baseliner)
 include(${baseliner_SOURCE_DIR}/cmake/utils.cmake)

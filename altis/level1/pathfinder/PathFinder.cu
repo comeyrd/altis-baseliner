@@ -91,7 +91,7 @@ __global__ void dynproc_kernel(int iteration, int *gpuWall, int *gpuSrc, int *gp
 // =================================================================================
 
 void PathfinderInput::generate_random() {
-  std::default_random_engine gen(seed);
+  std::default_random_engine gen(get_seed());
   std::uniform_int_distribution<int> dist(0, 9);
   for (size_t i = 0; i < m_flat_data.size(); i++) {
     m_flat_data[i] = dist(gen);
@@ -103,8 +103,8 @@ void PathfinderKernel::cpu(PathfinderOutput &output) {
 }
 
 void PathfinderKernel::setup() {
-  int rows = m_input.m_rows;
-  int cols = m_input.m_cols;
+  int rows = get_input()->m_rows;
+  int cols = get_input()->m_cols;
   int size = rows * cols;
 
   // Allocate device memory
@@ -115,24 +115,24 @@ void PathfinderKernel::setup() {
   // Copy Input Data
   // m_flat_data structure: [Row 0 (Initial Result)] [Row 1...N (Wall)]
   // Copy first row to gpuResult[0]
-  CHECK_CUDA(cudaMemcpy(m_d_gpuResult[0], m_input.m_flat_data.data(), sizeof(int) * cols, cudaMemcpyHostToDevice));
+  CHECK_CUDA(cudaMemcpy(m_d_gpuResult[0], get_input()->m_flat_data.data(), sizeof(int) * cols, cudaMemcpyHostToDevice));
 
   // Copy remaining rows to gpuWall
-  CHECK_CUDA(
-      cudaMemcpy(m_d_gpuWall, m_input.m_flat_data.data() + cols, sizeof(int) * (size - cols), cudaMemcpyHostToDevice));
+  CHECK_CUDA(cudaMemcpy(m_d_gpuWall, get_input()->m_flat_data.data() + cols, sizeof(int) * (size - cols),
+                        cudaMemcpyHostToDevice));
 }
 
 void PathfinderKernel::reset() {
   // The kernel swaps between gpuResult[0] and gpuResult[1].
   // If we re-run, we must ensure gpuResult[0] contains the initial seed data again.
-  int cols = m_input.m_cols;
-  CHECK_CUDA(cudaMemcpy(m_d_gpuResult[0], m_input.m_flat_data.data(), sizeof(int) * cols, cudaMemcpyHostToDevice));
+  int cols = get_input()->m_cols;
+  CHECK_CUDA(cudaMemcpy(m_d_gpuResult[0], get_input()->m_flat_data.data(), sizeof(int) * cols, cudaMemcpyHostToDevice));
 }
 
-void PathfinderKernel::run(std::shared_ptr<cudaStream_t> &stream) {
-  int rows = m_input.m_rows;
-  int cols = m_input.m_cols;
-  int pyramid_height = m_input.m_pyramid_height;
+void PathfinderKernel::run(std::shared_ptr<cudaStream_t> stream) {
+  int rows = get_input()->m_rows;
+  int cols = get_input()->m_cols;
+  int pyramid_height = get_input()->m_pyramid_height;
 
   // Calculate Grid/Block parameters
   int borderCols = (pyramid_height)*HALO;
@@ -161,7 +161,7 @@ void PathfinderKernel::run(std::shared_ptr<cudaStream_t> &stream) {
 
 void PathfinderKernel::teardown(PathfinderOutput &output) {
   // Copy the final result from the correct buffer
-  CHECK_CUDA(cudaMemcpy(output.m_result_host.data(), m_d_gpuResult[m_final_ret_idx], sizeof(int) * m_input.m_cols,
+  CHECK_CUDA(cudaMemcpy(output.m_result_host.data(), m_d_gpuResult[m_final_ret_idx], sizeof(int) * get_input()->m_cols,
                         cudaMemcpyDeviceToHost));
 
   CHECK_CUDA(cudaFree(m_d_gpuResult[0]));

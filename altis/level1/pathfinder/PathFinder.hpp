@@ -26,9 +26,9 @@ namespace Baseliner {
 
     void allocate() override {
       // Apply work_size to rows to scale the workload
-      m_rows = (m_rows <= 0 ? DEFAULT_ROWS : m_rows) * m_work_size;
-      m_cols = (m_cols <= 0 ? DEFAULT_COLS : m_cols) * m_work_size;
-      m_pyramid_height = (m_pyramid_height <= 0 ? DEFAULT_PYRAMID_HEIGHT : m_pyramid_height) * m_work_size;
+      m_rows = (m_rows <= 0 ? DEFAULT_ROWS : m_rows) * get_work_size();
+      m_cols = (m_cols <= 0 ? DEFAULT_COLS : m_cols) * get_work_size();
+      m_pyramid_height = (m_pyramid_height <= 0 ? DEFAULT_PYRAMID_HEIGHT : m_pyramid_height) * get_work_size();
 
       m_flat_data.resize(m_rows * m_cols);
     }
@@ -51,15 +51,15 @@ namespace Baseliner {
 
   class PathfinderOutput : public Baseliner::IOutput<PathfinderInput> {
   public:
-    explicit PathfinderOutput(const PathfinderInput &input)
+    explicit PathfinderOutput(std::shared_ptr<const PathfinderInput> input)
         : Baseliner::IOutput<PathfinderInput>(input) {
-      m_result_host.resize(input.m_cols);
+      m_result_host.resize(input->m_cols);
     }
 
     std::vector<int> m_result_host;
 
     bool operator==(const PathfinderOutput &other) const {
-      if (m_input.m_cols != other.m_input.m_cols)
+      if (get_input()->m_cols != other.get_input()->m_cols)
         return false;
       for (size_t i = 0; i < m_result_host.size(); i++) {
         if (m_result_host[i] != other.m_result_host[i]) {
@@ -82,8 +82,8 @@ namespace Baseliner {
 
   class PathfinderKernel : public Baseliner::ICudaKernel<PathfinderInput, PathfinderOutput> {
   public:
-    PathfinderKernel(const PathfinderInput &input)
-        : Baseliner::ICudaKernel<PathfinderInput, PathfinderOutput>(input),
+    PathfinderKernel(std::shared_ptr<const PathfinderInput> input)
+        : Baseliner::ICudaKernel<PathfinderInput, PathfinderOutput>(std::move(input)),
           m_d_gpuWall(nullptr),
           m_final_ret_idx(0) {
       m_d_gpuResult[0] = nullptr;
@@ -98,7 +98,7 @@ namespace Baseliner {
 
     void reset() override;
 
-    void run(std::shared_ptr<cudaStream_t> &stream) override;
+    void run(std::shared_ptr<cudaStream_t> stream) override;
 
     void teardown(PathfinderOutput &output) override;
 

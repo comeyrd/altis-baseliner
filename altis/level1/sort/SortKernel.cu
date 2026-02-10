@@ -351,15 +351,15 @@ namespace Baseliner {
 
   void SortKernel::cpu(SortOutput &output) {
     // 1. Copy the input data to the output containers
-    output.m_keys_host = m_input.m_keys_host;
-    output.m_vals_host = m_input.m_vals_host;
+    output.m_keys_host = get_input()->m_keys_host;
+    output.m_vals_host = get_input()->m_vals_host;
 
     // 2. Create a zip structure or sort indices to keep keys/values synced
     // Since the original benchmark sorts by KEY and moves VALUES with them:
 
     // Create a vector of indices
-    std::vector<int> indices(m_input.m_size);
-    for (int i = 0; i < m_input.m_size; i++)
+    std::vector<int> indices(get_input()->m_size);
+    for (int i = 0; i < get_input()->m_size; i++)
       indices[i] = i;
 
     // Sort indices based on the keys
@@ -367,10 +367,10 @@ namespace Baseliner {
               [&](int a, int b) { return output.m_keys_host[a] < output.m_keys_host[b]; });
 
     // 3. Reorder the data based on sorted indices
-    std::vector<unsigned int> sorted_keys(m_input.m_size);
-    std::vector<unsigned int> sorted_vals(m_input.m_size);
+    std::vector<unsigned int> sorted_keys(get_input()->m_size);
+    std::vector<unsigned int> sorted_vals(get_input()->m_size);
 
-    for (int i = 0; i < m_input.m_size; i++) {
+    for (int i = 0; i < get_input()->m_size; i++) {
       sorted_keys[i] = output.m_keys_host[indices[i]];
       sorted_vals[i] = output.m_vals_host[indices[i]];
     }
@@ -380,7 +380,7 @@ namespace Baseliner {
   }
 
   void SortKernel::setup() {
-    int size = m_input.m_size;
+    int size = get_input()->m_size;
     long long bytes = size * sizeof(unsigned int);
 
     // 1. Allocate main buffers
@@ -437,9 +437,9 @@ namespace Baseliner {
 
   void SortKernel::reset() {
     // Copy inputs to GPU
-    long long bytes = m_input.m_size * sizeof(unsigned int);
-    CHECK_CUDA(cudaMemcpy(m_d_keys, m_input.m_keys_host.data(), bytes, cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(m_d_vals, m_input.m_vals_host.data(), bytes, cudaMemcpyHostToDevice));
+    long long bytes = get_input()->m_size * sizeof(unsigned int);
+    CHECK_CUDA(cudaMemcpy(m_d_keys, get_input()->m_keys_host.data(), bytes, cudaMemcpyHostToDevice));
+    CHECK_CUDA(cudaMemcpy(m_d_vals, get_input()->m_vals_host.data(), bytes, cudaMemcpyHostToDevice));
   }
 
   void SortKernel::scanArrayRecursive(unsigned int *outArray, unsigned int *inArray, int numElements, int level,
@@ -471,8 +471,8 @@ namespace Baseliner {
     }
   }
 
-  void SortKernel::run(std::shared_ptr<cudaStream_t> &stream) {
-    int numElements = m_input.m_size;
+  void SortKernel::run(std::shared_ptr<cudaStream_t> stream) {
+    int numElements = get_input()->m_size;
 
     // Threads handle either 4 or two elements each
     const size_t radixGlobalWorkSize = numElements / 4;
@@ -507,7 +507,7 @@ namespace Baseliner {
   }
 
   void SortKernel::teardown(SortOutput &output) {
-    long long bytes = m_input.m_size * sizeof(unsigned int);
+    long long bytes = get_input()->m_size * sizeof(unsigned int);
     CHECK_CUDA(cudaMemcpy(output.m_keys_host.data(), m_d_keys, bytes, cudaMemcpyDeviceToHost));
     CHECK_CUDA(cudaMemcpy(output.m_vals_host.data(), m_d_vals, bytes, cudaMemcpyDeviceToHost));
 
