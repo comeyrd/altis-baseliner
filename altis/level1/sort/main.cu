@@ -4,8 +4,11 @@
 #include <baseliner/StoppingCriterion.hpp>
 
 namespace Sort {
-  auto stop = std::make_unique<Baseliner::ConfidenceIntervalMedianSC>();
-  Baseliner::Runner<Baseliner::SortKernel, Baseliner::Backend::CudaBackend> runner_act(std::move(stop));
+  auto runner_act = Baseliner::Runner<Baseliner::SortKernel, Baseliner::Backend::CudaBackend>()
+                        .set_stopping_criterion<Baseliner::ConfidenceIntervalMedianSC>()
+                        .add_stat<Baseliner::Stats::Q1>()
+                        .add_stat<Baseliner::Stats::Q3>()
+                        .add_stat<Baseliner::Stats::Median>();
   BASELINER_REGISTER_EXECUTABLE(&runner_act);
 
 } // namespace Sort
