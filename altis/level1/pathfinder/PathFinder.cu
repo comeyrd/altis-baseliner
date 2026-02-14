@@ -98,11 +98,7 @@ void PathfinderInput::generate_random() {
   }
 }
 
-void PathfinderKernel::cpu(PathfinderOutput &output) {
-  // TODO
-}
-
-void PathfinderKernel::setup() {
+void PathfinderKernel::setup(std::shared_ptr<cudaStream_t> stream) {
   int rows = get_input()->m_rows;
   int cols = get_input()->m_cols;
   int size = rows * cols;
@@ -122,7 +118,7 @@ void PathfinderKernel::setup() {
                         cudaMemcpyHostToDevice));
 }
 
-void PathfinderKernel::reset() {
+void PathfinderKernel::reset_kernel(std::shared_ptr<cudaStream_t> stream) {
   // The kernel swaps between gpuResult[0] and gpuResult[1].
   // If we re-run, we must ensure gpuResult[0] contains the initial seed data again.
   int cols = get_input()->m_cols;
@@ -159,7 +155,7 @@ void PathfinderKernel::run(std::shared_ptr<cudaStream_t> stream) {
   m_final_ret_idx = dst;
 }
 
-void PathfinderKernel::teardown(PathfinderOutput &output) {
+void PathfinderKernel::teardown(std::shared_ptr<cudaStream_t> stream, PathfinderOutput &output) {
   // Copy the final result from the correct buffer
   CHECK_CUDA(cudaMemcpy(output.m_result_host.data(), m_d_gpuResult[m_final_ret_idx], sizeof(int) * get_input()->m_cols,
                         cudaMemcpyDeviceToHost));

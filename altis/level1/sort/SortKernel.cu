@@ -9,7 +9,7 @@
 #define WARP_SIZE 32
 #define SORT_BLOCK_SIZE 128
 #define SCAN_BLOCK_SIZE 256
-
+using namespace Baseliner;
 typedef unsigned int uint;
 
 __device__ uint scanLSB(const uint val, uint *s_data) {
@@ -347,183 +347,147 @@ __global__ void vectorAddUniform4(uint *d_vector, const uint *d_uniforms, const 
 // BASELINER IMPLEMENTATION
 // =================================================================================
 
-namespace Baseliner {
+void SortKernel::setup(std::shared_ptr<cudaStream_t> stream) {
+  int size = get_input()->m_size;
+  long long bytes = size * sizeof(unsigned int);
 
-  void SortKernel::cpu(SortOutput &output) {
-    // 1. Copy the input data to the output containers
-    output.m_keys_host = get_input()->m_keys_host;
-    output.m_vals_host = get_input()->m_vals_host;
+  // 1. Allocate main buffers
+  CHECK_CUDA(cudaMalloc((void **)&m_d_keys, bytes));
+  CHECK_CUDA(cudaMalloc((void **)&m_d_vals, bytes));
+  CHECK_CUDA(cudaMalloc((void **)&m_d_tempKeys, bytes));
+  CHECK_CUDA(cudaMalloc((void **)&m_d_tempVals, bytes));
 
-    // 2. Create a zip structure or sort indices to keep keys/values synced
-    // Since the original benchmark sorts by KEY and moves VALUES with them:
+  // 2. Logic for Scan Block Sums Allocation
+  uint maxNumScanElements = size;
+  uint numScanElts = maxNumScanElements;
+  uint level = 0;
 
-    // Create a vector of indices
-    std::vector<int> indices(get_input()->m_size);
-    for (int i = 0; i < get_input()->m_size; i++)
-      indices[i] = i;
-
-    // Sort indices based on the keys
-    std::sort(indices.begin(), indices.end(),
-              [&](int a, int b) { return output.m_keys_host[a] < output.m_keys_host[b]; });
-
-    // 3. Reorder the data based on sorted indices
-    std::vector<unsigned int> sorted_keys(get_input()->m_size);
-    std::vector<unsigned int> sorted_vals(get_input()->m_size);
-
-    for (int i = 0; i < get_input()->m_size; i++) {
-      sorted_keys[i] = output.m_keys_host[indices[i]];
-      sorted_vals[i] = output.m_vals_host[indices[i]];
-    }
-
-    output.m_keys_host = sorted_keys;
-    output.m_vals_host = sorted_vals;
-  }
-
-  void SortKernel::setup() {
-    int size = get_input()->m_size;
-    long long bytes = size * sizeof(unsigned int);
-
-    // 1. Allocate main buffers
-    CHECK_CUDA(cudaMalloc((void **)&m_d_keys, bytes));
-    CHECK_CUDA(cudaMalloc((void **)&m_d_vals, bytes));
-    CHECK_CUDA(cudaMalloc((void **)&m_d_tempKeys, bytes));
-    CHECK_CUDA(cudaMalloc((void **)&m_d_tempVals, bytes));
-
-    // 2. Logic for Scan Block Sums Allocation
-    uint maxNumScanElements = size;
-    uint numScanElts = maxNumScanElements;
-    uint level = 0;
-
-    // Count levels
-    do {
-      uint numBlocks = std::max(1, (int)ceil((float)numScanElts / (4 * SCAN_BLOCK_SIZE)));
-      if (numBlocks > 1) {
-        level++;
-      }
-      numScanElts = numBlocks;
-    } while (numScanElts > 1);
-
-    m_numLevelsAllocated = level + 1;
-
-    // Allocate Host array for pointers to device memory
-    m_scanBlockSums = (unsigned int **)malloc((m_numLevelsAllocated) * sizeof(unsigned int *));
-
-    numScanElts = maxNumScanElements;
-    level = 0;
-
-    // Allocate Device memory for each level
-    do {
-      uint numBlocks = std::max(1, (int)ceil((float)numScanElts / (4 * SCAN_BLOCK_SIZE)));
-      if (numBlocks > 1) {
-        CHECK_CUDA(cudaMalloc((void **)&(m_scanBlockSums[level]), numBlocks * sizeof(unsigned int)));
-        level++;
-      }
-      numScanElts = numBlocks;
-    } while (numScanElts > 1);
-
-    CHECK_CUDA(cudaMalloc((void **)&(m_scanBlockSums[level]), sizeof(unsigned int)));
-
-    // 3. Allocate Radix sort aux buffers
-    // Each thread in the sort kernel handles 4 elements
-    size_t numSortGroups = size / (4 * SORT_BLOCK_SIZE);
-
-    CHECK_CUDA(cudaMalloc((void **)&m_d_counters, WARP_SIZE * numSortGroups * sizeof(unsigned int)));
-    CHECK_CUDA(cudaMalloc((void **)&m_d_counterSums, WARP_SIZE * numSortGroups * sizeof(unsigned int)));
-    CHECK_CUDA(cudaMalloc((void **)&m_d_blockOffsets, WARP_SIZE * numSortGroups * sizeof(unsigned int)));
-
-    // 4. Initial Reset (Copy data)
-    reset();
-  }
-
-  void SortKernel::reset() {
-    // Copy inputs to GPU
-    long long bytes = get_input()->m_size * sizeof(unsigned int);
-    CHECK_CUDA(cudaMemcpy(m_d_keys, get_input()->m_keys_host.data(), bytes, cudaMemcpyHostToDevice));
-    CHECK_CUDA(cudaMemcpy(m_d_vals, get_input()->m_vals_host.data(), bytes, cudaMemcpyHostToDevice));
-  }
-
-  void SortKernel::scanArrayRecursive(unsigned int *outArray, unsigned int *inArray, int numElements, int level,
-                                      unsigned int **blockSums, std::shared_ptr<cudaStream_t> &stream) {
-    // Kernels handle 8 elems per thread
-    unsigned int numBlocks = std::max(1u, (unsigned int)ceil((float)numElements / (4.f * SCAN_BLOCK_SIZE)));
-    unsigned int sharedEltsPerBlock = SCAN_BLOCK_SIZE * 2;
-    unsigned int sharedMemSize = sizeof(uint) * sharedEltsPerBlock;
-
-    bool fullBlock = (numElements == numBlocks * 4 * SCAN_BLOCK_SIZE);
-
-    dim3 grid(numBlocks, 1, 1);
-    dim3 threads(SCAN_BLOCK_SIZE, 1, 1);
-
-    // execute the scan
+  // Count levels
+  do {
+    uint numBlocks = std::max(1, (int)ceil((float)numScanElts / (4 * SCAN_BLOCK_SIZE)));
     if (numBlocks > 1) {
-      scan<<<grid, threads, sharedMemSize, *stream>>>(outArray, inArray, blockSums[level], numElements, fullBlock,
-                                                      true);
-    } else {
-      scan<<<grid, threads, sharedMemSize, *stream>>>(outArray, inArray, blockSums[level], numElements, fullBlock,
-                                                      false);
+      level++;
     }
+    numScanElts = numBlocks;
+  } while (numScanElts > 1);
+
+  m_numLevelsAllocated = level + 1;
+
+  // Allocate Host array for pointers to device memory
+  m_scanBlockSums = (unsigned int **)malloc((m_numLevelsAllocated) * sizeof(unsigned int *));
+
+  numScanElts = maxNumScanElements;
+  level = 0;
+
+  // Allocate Device memory for each level
+  do {
+    uint numBlocks = std::max(1, (int)ceil((float)numScanElts / (4 * SCAN_BLOCK_SIZE)));
+    if (numBlocks > 1) {
+      CHECK_CUDA(cudaMalloc((void **)&(m_scanBlockSums[level]), numBlocks * sizeof(unsigned int)));
+      level++;
+    }
+    numScanElts = numBlocks;
+  } while (numScanElts > 1);
+
+  CHECK_CUDA(cudaMalloc((void **)&(m_scanBlockSums[level]), sizeof(unsigned int)));
+
+  // 3. Allocate Radix sort aux buffers
+  // Each thread in the sort kernel handles 4 elements
+  size_t numSortGroups = size / (4 * SORT_BLOCK_SIZE);
+
+  CHECK_CUDA(cudaMalloc((void **)&m_d_counters, WARP_SIZE * numSortGroups * sizeof(unsigned int)));
+  CHECK_CUDA(cudaMalloc((void **)&m_d_counterSums, WARP_SIZE * numSortGroups * sizeof(unsigned int)));
+  CHECK_CUDA(cudaMalloc((void **)&m_d_blockOffsets, WARP_SIZE * numSortGroups * sizeof(unsigned int)));
+
+  // 4. Initial Reset (Copy data)
+  reset_kernel(stream);
+}
+
+void SortKernel::reset_kernel(std::shared_ptr<cudaStream_t> stream) {
+  // Copy inputs to GPU
+  long long bytes = get_input()->m_size * sizeof(unsigned int);
+  CHECK_CUDA(cudaMemcpy(m_d_keys, get_input()->m_keys_host.data(), bytes, cudaMemcpyHostToDevice));
+  CHECK_CUDA(cudaMemcpy(m_d_vals, get_input()->m_vals_host.data(), bytes, cudaMemcpyHostToDevice));
+}
+
+void SortKernel::scanArrayRecursive(unsigned int *outArray, unsigned int *inArray, int numElements, int level,
+                                    unsigned int **blockSums, std::shared_ptr<cudaStream_t> &stream) {
+  // Kernels handle 8 elems per thread
+  unsigned int numBlocks = std::max(1u, (unsigned int)ceil((float)numElements / (4.f * SCAN_BLOCK_SIZE)));
+  unsigned int sharedEltsPerBlock = SCAN_BLOCK_SIZE * 2;
+  unsigned int sharedMemSize = sizeof(uint) * sharedEltsPerBlock;
+
+  bool fullBlock = (numElements == numBlocks * 4 * SCAN_BLOCK_SIZE);
+
+  dim3 grid(numBlocks, 1, 1);
+  dim3 threads(SCAN_BLOCK_SIZE, 1, 1);
+
+  // execute the scan
+  if (numBlocks > 1) {
+    scan<<<grid, threads, sharedMemSize, *stream>>>(outArray, inArray, blockSums[level], numElements, fullBlock, true);
+  } else {
+    scan<<<grid, threads, sharedMemSize, *stream>>>(outArray, inArray, blockSums[level], numElements, fullBlock, false);
+  }
+  CHECK_CUDA(cudaGetLastError());
+
+  if (numBlocks > 1) {
+    scanArrayRecursive(blockSums[level], blockSums[level], numBlocks, level + 1, blockSums, stream);
+    vectorAddUniform4<<<grid, threads, 0, *stream>>>(outArray, blockSums[level], numElements);
+    CHECK_CUDA(cudaGetLastError());
+  }
+}
+
+void SortKernel::run(std::shared_ptr<cudaStream_t> stream) {
+  int numElements = get_input()->m_size;
+
+  // Threads handle either 4 or two elements each
+  const size_t radixGlobalWorkSize = numElements / 4;
+  const size_t findGlobalWorkSize = numElements / 2;
+  const size_t reorderGlobalWorkSize = numElements / 2;
+
+  const size_t radixBlocks = radixGlobalWorkSize / SORT_BLOCK_SIZE;
+  const size_t findBlocks = findGlobalWorkSize / SCAN_BLOCK_SIZE;
+  const size_t reorderBlocks = reorderGlobalWorkSize / SCAN_BLOCK_SIZE;
+
+  // Loop over the bits (Radix Sort)
+  for (int startbit = 0; startbit < SORT_BITS; startbit += 4) {
+    // 1. Sort Blocks
+    radixSortBlocks<<<radixBlocks, SORT_BLOCK_SIZE, 4 * sizeof(uint) * SORT_BLOCK_SIZE, *stream>>>(
+        4, startbit, (uint4 *)m_d_tempKeys, (uint4 *)m_d_tempVals, (uint4 *)m_d_keys, (uint4 *)m_d_vals);
     CHECK_CUDA(cudaGetLastError());
 
-    if (numBlocks > 1) {
-      scanArrayRecursive(blockSums[level], blockSums[level], numBlocks, level + 1, blockSums, stream);
-      vectorAddUniform4<<<grid, threads, 0, *stream>>>(outArray, blockSums[level], numElements);
-      CHECK_CUDA(cudaGetLastError());
-    }
+    // 2. Find Offsets
+    findRadixOffsets<<<findBlocks, SCAN_BLOCK_SIZE, 2 * SCAN_BLOCK_SIZE * sizeof(uint), *stream>>>(
+        (uint2 *)m_d_tempKeys, m_d_counters, m_d_blockOffsets, startbit, numElements, findBlocks);
+    CHECK_CUDA(cudaGetLastError());
+
+    // 3. Scan Recursive
+    scanArrayRecursive(m_d_counterSums, m_d_counters, 16 * reorderBlocks, 0, m_scanBlockSums, stream);
+
+    // 4. Reorder Data
+    reorderData<<<reorderBlocks, SCAN_BLOCK_SIZE, 0, *stream>>>(
+        startbit, (uint *)m_d_keys, (uint *)m_d_vals, (uint2 *)m_d_tempKeys, (uint2 *)m_d_tempVals, m_d_blockOffsets,
+        m_d_counterSums, m_d_counters, reorderBlocks);
+    CHECK_CUDA(cudaGetLastError());
   }
+}
 
-  void SortKernel::run(std::shared_ptr<cudaStream_t> stream) {
-    int numElements = get_input()->m_size;
+void SortKernel::teardown(std::shared_ptr<cudaStream_t> stream, SortOutput &output) {
+  long long bytes = get_input()->m_size * sizeof(unsigned int);
+  CHECK_CUDA(cudaMemcpy(output.m_keys_host.data(), m_d_keys, bytes, cudaMemcpyDeviceToHost));
+  CHECK_CUDA(cudaMemcpy(output.m_vals_host.data(), m_d_vals, bytes, cudaMemcpyDeviceToHost));
 
-    // Threads handle either 4 or two elements each
-    const size_t radixGlobalWorkSize = numElements / 4;
-    const size_t findGlobalWorkSize = numElements / 2;
-    const size_t reorderGlobalWorkSize = numElements / 2;
-
-    const size_t radixBlocks = radixGlobalWorkSize / SORT_BLOCK_SIZE;
-    const size_t findBlocks = findGlobalWorkSize / SCAN_BLOCK_SIZE;
-    const size_t reorderBlocks = reorderGlobalWorkSize / SCAN_BLOCK_SIZE;
-
-    // Loop over the bits (Radix Sort)
-    for (int startbit = 0; startbit < SORT_BITS; startbit += 4) {
-      // 1. Sort Blocks
-      radixSortBlocks<<<radixBlocks, SORT_BLOCK_SIZE, 4 * sizeof(uint) * SORT_BLOCK_SIZE, *stream>>>(
-          4, startbit, (uint4 *)m_d_tempKeys, (uint4 *)m_d_tempVals, (uint4 *)m_d_keys, (uint4 *)m_d_vals);
-      CHECK_CUDA(cudaGetLastError());
-
-      // 2. Find Offsets
-      findRadixOffsets<<<findBlocks, SCAN_BLOCK_SIZE, 2 * SCAN_BLOCK_SIZE * sizeof(uint), *stream>>>(
-          (uint2 *)m_d_tempKeys, m_d_counters, m_d_blockOffsets, startbit, numElements, findBlocks);
-      CHECK_CUDA(cudaGetLastError());
-
-      // 3. Scan Recursive
-      scanArrayRecursive(m_d_counterSums, m_d_counters, 16 * reorderBlocks, 0, m_scanBlockSums, stream);
-
-      // 4. Reorder Data
-      reorderData<<<reorderBlocks, SCAN_BLOCK_SIZE, 0, *stream>>>(
-          startbit, (uint *)m_d_keys, (uint *)m_d_vals, (uint2 *)m_d_tempKeys, (uint2 *)m_d_tempVals, m_d_blockOffsets,
-          m_d_counterSums, m_d_counters, reorderBlocks);
-      CHECK_CUDA(cudaGetLastError());
-    }
+  // Cleanup
+  for (int i = 0; i < m_numLevelsAllocated; i++) {
+    CHECK_CUDA(cudaFree(m_scanBlockSums[i]));
   }
+  free(m_scanBlockSums); // Host array
 
-  void SortKernel::teardown(SortOutput &output) {
-    long long bytes = get_input()->m_size * sizeof(unsigned int);
-    CHECK_CUDA(cudaMemcpy(output.m_keys_host.data(), m_d_keys, bytes, cudaMemcpyDeviceToHost));
-    CHECK_CUDA(cudaMemcpy(output.m_vals_host.data(), m_d_vals, bytes, cudaMemcpyDeviceToHost));
-
-    // Cleanup
-    for (int i = 0; i < m_numLevelsAllocated; i++) {
-      CHECK_CUDA(cudaFree(m_scanBlockSums[i]));
-    }
-    free(m_scanBlockSums); // Host array
-
-    CHECK_CUDA(cudaFree(m_d_keys));
-    CHECK_CUDA(cudaFree(m_d_vals));
-    CHECK_CUDA(cudaFree(m_d_tempKeys));
-    CHECK_CUDA(cudaFree(m_d_tempVals));
-    CHECK_CUDA(cudaFree(m_d_counters));
-    CHECK_CUDA(cudaFree(m_d_counterSums));
-    CHECK_CUDA(cudaFree(m_d_blockOffsets));
-  }
-
-} // namespace Baseliner
+  CHECK_CUDA(cudaFree(m_d_keys));
+  CHECK_CUDA(cudaFree(m_d_vals));
+  CHECK_CUDA(cudaFree(m_d_tempKeys));
+  CHECK_CUDA(cudaFree(m_d_tempVals));
+  CHECK_CUDA(cudaFree(m_d_counters));
+  CHECK_CUDA(cudaFree(m_d_counterSums));
+  CHECK_CUDA(cudaFree(m_d_blockOffsets));
+}
