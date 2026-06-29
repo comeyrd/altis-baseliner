@@ -1,0 +1,210 @@
+{
+  "baseliner_version": "1.0.0",
+  "presets": {
+    "GupsXOR": {
+      "default": {
+        "description": "Default preset",
+        "options": {
+          "GupsWorkload": {
+            "base_n": {
+              "description": "Table size (number of elements) at work_size=1",
+              "value": "1048576"
+            }
+          },
+          "Workload": {
+            "validation_type": {
+              "description": "How the workload should be validated",
+              "value": "Reference"
+            },
+            "validation_path": {
+              "description": "if the validation is file based, the path where the comparison files is located",
+              "value": ""
+            },
+            "seed": {
+              "description": "The seed used for the generation of input data",
+              "value": "333"
+            },
+            "work_size": {
+              "description": "The work size to apply, 1 = 32MFlop & 1 = 1MB",
+              "value": "1"
+            }
+          }
+        }
+      }
+    },
+    "GupsCAS": {
+      "default": {
+        "description": "Default preset",
+        "options": {
+          "GupsWorkload": {
+            "base_n": {
+              "description": "Table size (number of elements) at work_size=1",
+              "value": "1048576"
+            }
+          },
+          "Workload": {
+            "validation_type": {
+              "description": "How the workload should be validated",
+              "value": "Reference"
+            },
+            "validation_path": {
+              "description": "if the validation is file based, the path where the comparison files is located",
+              "value": ""
+            },
+            "seed": {
+              "description": "The seed used for the generation of input data",
+              "value": "333"
+            },
+            "work_size": {
+              "description": "The work size to apply, 1 = 32MFlop & 1 = 1MB",
+              "value": "1"
+            }
+          }
+        }
+      }
+    },
+    "cuda": {
+      "default": {
+        "description": "Default preset",
+        "options": {
+          "Backend": {
+            "max_clock_value": {
+              "description": "-1 means locking to the base clock, else is locking to a specific frequency",
+              "value": "-1"
+            },
+            "min_clock_value": {
+              "description": "-1 means locking to the base clock, else is locking to a specific frequency",
+              "value": "-1"
+            },
+            "lock_clock": {
+              "description": "If the clocks should be locked",
+              "value": "0"
+            },
+            "device": {
+              "description": "The device number to run on",
+              "value": "0"
+            }
+          }
+        }
+      }
+    },
+    "Benchmark": {
+      "default": {
+        "description": "Default preset",
+        "options": {
+          "Benchmark": {
+            "validate_workload": {
+              "description": "If you want the workload results to be validated",
+              "value": "0"
+            },
+            "max_gpu_temp": {
+              "description": "If warm_cool, the minimum accepted temperature before cooling down the GPU",
+              "value": "60.000000"
+            },
+            "warm_cool_timeout": {
+              "description": "How long the benchmark warms or cool before throwing",
+              "value": "3"
+            },
+            "minimal_batch_duration": {
+              "description": "If dynamic batch size is set tu true, how long a batch should minimaly be",
+              "value": "10.000000"
+            },
+            "min_gpu_temp": {
+              "description": "If warm_cool, the minimum accepted temperature before warming up the GPU",
+              "value": "45.000000"
+            },
+            "batch_size": {
+              "description": "The size of the batch",
+              "value": "25"
+            },
+            "warmup": {
+              "description": "Having a warmup run",
+              "value": "1"
+            },
+            "flush": {
+              "description": "Enables the flushing of the L2 cache",
+              "value": "0"
+            },
+            "block_queue_size": {
+              "description": "The max size of the blocking queue",
+              "value": "64"
+            },
+            "dynamic_batch": {
+              "description": "If the batch size is dynamic",
+              "value": "1"
+            },
+            "warm_cool": {
+              "description": "Does the Benchmark actively warm or cool the GPU",
+              "value": "0"
+            },
+            "block_duration": {
+              "description": "Duration of the blocking kernel (in ms)",
+              "value": "1000.000000"
+            },
+            "block": {
+              "description": "Using a blocking kernel",
+              "value": "1"
+            }
+          }
+        }
+      }
+    },
+    "StoppingCriterion": {
+      "default": {
+        "description": "Default preset",
+        "options": {
+          "StoppingCriterion": {
+            "max_nb_repetition": {
+              "description": "Maximum number of repetitions",
+              "value": "500"
+            }
+          }
+        }
+      }
+    }
+  },
+  "stats_presets": {
+    "default": {
+      "description": "Default preset",
+      "stat_names": ["Median", "Mean", "CoefficientOfVariation"],
+      "stat_options": {}
+    }
+  },
+  "recipes": {
+    "default": {
+      "description": "Default Recipe",
+      "benchmark": {
+        "impl": "Benchmark",
+        "preset": "default"
+      },
+      "stopping": {
+        "impl": "StoppingCriterion",
+        "preset": "default"
+      },
+      "stats": {
+        "preset": "default"
+      }
+    }
+  },
+  "campaigns": [
+    {
+      "name": "cas",
+      "recipe": "default",
+      "workloads": [
+        {
+          "impl": "GupsXOR"
+        },
+        {
+          "impl": "GupsCAS"
+        }
+      ],
+      "backends": [
+        {
+          "impl": "cuda",
+          "preset": "default"
+        }
+      ],
+      "on_incompatible": "Skip"
+    }
+  ]
+}
