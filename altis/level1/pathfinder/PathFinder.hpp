@@ -1,109 +1,115 @@
-#ifndef PATHFINDER_KERNEL_HPP
-#define PATHFINDER_KERNEL_HPP
+#ifndef PATHFINDER_WORKLOAD_HPP
+#define PATHFINDER_WORKLOAD_HPP
 
-#include "cuda_runtime.h"
+#include <baseliner/core/Workload.hpp>
+
 #include <algorithm>
-#include <baseliner/Kernel.hpp>
-#include <baseliner/Options.hpp>
-#include <baseliner/backend/cuda/CudaBackend.hpp>
-#include <iostream>
+#include <cmath>
+#include <random>
+#include <string>
 #include <vector>
 
-using namespace Baseliner;
-constexpr int DEFAULT_ROWS = 8 * 1024;
-constexpr int DEFAULT_COLS = 8 * 1024;
-constexpr int DEFAULT_PYRAMID_HEIGHT = 4;
+constexpr int PATHFINDER_BLOCK_SIZE = 512;
+constexpr int PATHFINDER_HALO = 1;
 
-class PathfinderInput : public Baseliner::IInput {
+template <typename BackendT>
+class PathfinderWorkload : public Baseliner::IWorkload<BackendT> {
 public:
+  using backend = typename PathfinderWorkload::backend;
+
+  PathfinderWorkload() = default;
+
+  auto algo() -> std::string override {
+    return "Pathfinder";
+  }
+
+  auto number_of_bytes() -> std::optional<size_t> override {
+    return sizeof(int) * m_rows * m_cols + sizeof(int) * m_cols * 2;
+  }
+
+  // Host setup
+  void setup_host_random_generated() override {
+    // Pathfinder is memory bound (3 flops per int read), so 1 unit of
+    // work size == 1 MiB of grid data, not 32 MFLOP.
+    //
+    // total bytes ≈ rows * cols * sizeof(int)
+    //
+    // m_base_rows/m_base_cols define the *shape* of the work_size==1 case
+    // (default 512x512 -> exactly 1 MiB). To scale total bytes linearly
+    // with work_size while preserving that aspect ratio, each dimension
+    // is scaled by sqrt(work_size), since rows*cols grows with the
+    // square of the per-dimension scale factor.
+    const double scale = std::sqrt(static_cast<double>(this->get_work_size()));
+
+    m_pyramid_height = m_base_pyramid_height;
+
+    m_rows = std::max(1, static_cast<int>(std::llround(m_base_rows * scale)));
+    m_cols = std::max(1, static_cast<int>(std::llround(m_base_cols * scale)));
+
+    // Guard against degenerate shapes at very small work sizes / large
+    // pyramid heights: cols must be large enough for the halo on both sides.
+    const int min_cols = m_pyramid_height * PATHFINDER_HALO * 2 + 1;
+    if (m_cols < min_cols) {
+      m_cols = min_cols;
+    }
+
+    m_h_data.resize(static_cast<size_t>(m_rows) * m_cols);
+    m_h_result.resize(m_cols);
+    srand(this->get_seed());
+    for (int i = 0; i < m_rows * m_cols; i++) {
+      m_h_data[i] = rand() % 10;
+    }
+
+    m_borderCols = m_pyramid_height * PATHFINDER_HALO;
+    m_smallBlockCol = PATHFINDER_BLOCK_SIZE - m_pyramid_height * PATHFINDER_HALO * 2;
+    m_blockCols = m_cols / m_smallBlockCol + ((m_cols % m_smallBlockCol == 0) ? 0 : 1);
+  }
+
+  void setup_host_from_file(std::string &path) override {
+    setup_host_random_generated();
+  }
+
+  void inner_save_setup(std::string &path) override {};
+
+  void setup_device(typename backend::stream_t stream) override;
+  void reset_device(typename backend::stream_t stream) override;
+  auto run(typename backend::stream_t stream) -> typename backend::launch_result_t override;
+  void fetch_results(typename backend::stream_t stream) override;
+  void free() override {
+    m_h_data.clear();
+    m_h_result.clear();
+  }
+
+protected:
   void register_options() override {
-    IInput::register_options();
-    add_option("Pathfinder", "rows", "Number of rows", m_rows);
-    add_option("Pathfinder", "cols", "Number of columns", m_cols);
-    add_option("Pathfinder", "pyramid_height", "Height of the pyramid", m_pyramid_height);
+    Baseliner::IWorkload<BackendT>::register_options();
+    this->add_option("PathfinderWorkload", "rows", "Base number of rows at work_size=1", m_base_rows);
+    this->add_option("PathfinderWorkload", "cols", "Base number of columns at work_size=1", m_base_cols);
+    this->add_option("PathfinderWorkload", "pyramid_height", "Pyramid height", m_base_pyramid_height);
   }
-
-  void allocate() override {
-    // Apply work_size to rows to scale the workload
-    m_rows = (m_rows <= 0 ? DEFAULT_ROWS : m_rows) * get_work_size();
-    m_cols = (m_cols <= 0 ? DEFAULT_COLS : m_cols) * get_work_size();
-    m_pyramid_height = (m_pyramid_height <= 0 ? DEFAULT_PYRAMID_HEIGHT : m_pyramid_height) * get_work_size();
-
-    m_flat_data.resize(m_rows * m_cols);
-  }
-
-  void generate_random() override;
-
-  explicit PathfinderInput()
-      : Baseliner::IInput() {
-    m_rows = DEFAULT_ROWS;
-    m_cols = DEFAULT_COLS;
-    m_pyramid_height = DEFAULT_PYRAMID_HEIGHT;
-    allocate();
-  }
-
-  int m_rows;
-  int m_cols;
-  int m_pyramid_height;
-  std::vector<int> m_flat_data;
-};
-
-class PathfinderOutput : public Baseliner::IOutput<PathfinderInput> {
-public:
-  explicit PathfinderOutput(std::shared_ptr<const PathfinderInput> input)
-      : Baseliner::IOutput<PathfinderInput>(input) {
-    m_result_host.resize(input->m_cols);
-  }
-
-  std::vector<int> m_result_host;
-
-  bool operator==(const PathfinderOutput &other) const {
-    if (get_input()->m_cols != other.get_input()->m_cols)
-      return false;
-    for (size_t i = 0; i < m_result_host.size(); i++) {
-      if (m_result_host[i] != other.m_result_host[i]) {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  friend std::ostream &operator<<(std::ostream &os, const PathfinderOutput &thing) {
-    os << "Result (first 20 elements): ";
-    size_t limit = std::min((size_t)20, thing.m_result_host.size());
-    for (size_t i = 0; i < limit; i++) {
-      os << thing.m_result_host[i] << ", ";
-    }
-    os << "..." << std::endl;
-    return os;
-  }
-};
-
-class PathfinderKernel : public Baseliner::ICudaKernel<PathfinderInput, PathfinderOutput> {
-public:
-  PathfinderKernel(std::shared_ptr<const PathfinderInput> input)
-      : Baseliner::ICudaKernel<PathfinderInput, PathfinderOutput>(std::move(input)),
-        m_d_gpuWall(nullptr),
-        m_final_ret_idx(0) {
-    m_d_gpuResult[0] = nullptr;
-    m_d_gpuResult[1] = nullptr;
-  }
-  std::string name() override {
-    return "PathfinderKernel";
-  }
-
-  void setup(std::shared_ptr<cudaStream_t> stream) override;
-
-  void reset_kernel(std::shared_ptr<cudaStream_t> stream) override;
-
-  void run(std::shared_ptr<cudaStream_t> stream) override;
-
-  void teardown(std::shared_ptr<cudaStream_t> stream, PathfinderOutput &output) override;
 
 private:
-  int *m_d_gpuWall;
-  int *m_d_gpuResult[2];
-  int m_final_ret_idx; // Tracks which buffer has the final result
+  // Default shape gives rows*cols*sizeof(int) == 1 MiB at work_size == 1
+  // (512 * 512 * 4 bytes = 1,048,576 bytes).
+  int m_base_rows = PATHFINDER_BLOCK_SIZE;
+  int m_base_cols = PATHFINDER_BLOCK_SIZE;
+  int m_base_pyramid_height = 4;
+
+  int m_rows = 0;
+  int m_cols = 0;
+  int m_pyramid_height = 0;
+
+  int m_borderCols = 0;
+  int m_smallBlockCol = 0;
+  int m_blockCols = 0;
+
+  std::vector<int> m_h_data;
+  std::vector<int> m_h_result;
+
+  int *m_d_gpuWall = nullptr;
+  int *m_d_gpuResult[2] = {nullptr, nullptr};
+
+  int m_final_ret = 0;
 };
 
-#endif // PATHFINDER_KERNEL_HPP
+#endif // PATHFINDER_WORKLOAD_HPP
