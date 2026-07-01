@@ -9,7 +9,7 @@ For each row, every cell's result depends on 3 cells from the row above it (a ha
 
 To get around this, PathFinder uses "pyramid blocking" : each kernel launch computes `pyramid_height` rows at once, using shared memory within a block to handle the row-to-row dependency internally (with `__syncthreads()` between each row). Once `pyramid_height` rows are computed, the host launches another kernel for the next `pyramid_height` rows, using the previous kernel's output as input. This is why PathFinder launches many small kernels in sequence instead of one big one — `pyramid_height` trades off kernel launch overhead (smaller = more launches) against redundant halo recomputation at the edges of each block (larger = more wasted work per launch).
 
-## How does PathFinder runs kernels :
+## How does PathFinder Altis runs kernels :
 
 Per pass, the grid is split column-wise into blocks of `BLOCK_SIZE` (512) threads. Each block computes a "small block" of `smallBlockCol = BLOCK_SIZE - pyramid_height * HALO * 2` columns, with the remaining `pyramid_height * HALO` columns on each side used as halo/border to correctly propagate values without needing inter-block communication. `blockCols` (the grid dimension) is then `cols / smallBlockCol`, rounded up.
 

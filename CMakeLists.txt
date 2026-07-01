@@ -49,6 +49,7 @@ add_library(benchmark INTERFACE)
 target_link_libraries(benchmark INTERFACE baseliner::baseliner)
 # Add subdirectories
 add_subdirectory(altis)
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(DUMMY_SOURCE "${CMAKE_CURRENT_BINARY_DIR}/dummy_main.cpp")
 file(WRITE ${DUMMY_SOURCE} " ")
 add_executable(altis_exec ${DUMMY_SOURCE})
