@@ -98,9 +98,6 @@ void GupsWorkload<Baseliner::Hardware::CudaBackend>::setup_device(typename backe
 
   m_grid_size = prop.multiProcessorCount * (prop.maxThreadsPerMultiProcessor / prop.warpSize);
   m_thread_size = prop.warpSize;
-  std::cout << "Warp size " << prop.warpSize << "\n";
-  std::cout << "Multi-processor count " << prop.multiProcessorCount << "\n";
-  std::cout << "Max threads per multi-processor " << prop.maxThreadsPerMultiProcessor << "\n";
 }
 
 template <>
